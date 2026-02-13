@@ -1,9 +1,10 @@
 {
-  "name": "expo-speech-transcriber",
+  "name": "@geetpurwar/expo-speech-transcriber-multilang",
   "version": "0.2.0",
   "description": "On-device speech transcription for React Native and Expo apps with multi-language support. Works offline on iOS and Android.",
   "main": "build/index.js",
   "types": "build/index.d.ts",
+  "private": false,
   "scripts": {
     "build": "expo-module build",
     "clean": "expo-module clean",
