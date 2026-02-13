@@ -1,0 +1,29 @@
+{
+  "name": "expo-speech-transcriber-example",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "expo": "~54.0.25",
+    "expo-audio": "~1.0.15",
+    "expo-linking": "^8.0.9",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-audio-api": "^0.10.1"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.0",
+    "typescript": "~5.9.2"
+  },
+  "private": true,
+  "expo": {
+    "autolinking": {
+      "nativeModulesDir": ".."
+    }
+  }
+}
