@@ -102,6 +102,11 @@ public class ExpoSpeechTranscriberModule: Module {
         AsyncFunction("isLanguageAvailable") { (localeCode: String) async -> Bool in
             return await self.isLanguageAvailable(localeCode: localeCode)
         }
+        
+        // NEW: Universal real-time transcription (auto-selects best API)
+        AsyncFunction("recordRealTimeAndTranscribeUniversal") { (language: String?) async -> Void in
+            await self.recordRealTimeAndTranscribeUniversal(language: language)
+        }
     }
     
     // MARK: - Private Implementation Methods
@@ -202,7 +207,6 @@ public class ExpoSpeechTranscriberModule: Module {
         
         recognitionTask = recognizer.recognitionTask(with: recognitionRequest) { result, error in
             if let error = error {
-                self.stopListening()
                 self.sendEvent("onTranscriptionError", ["message": error.localizedDescription])
                 return
             }
@@ -417,5 +421,125 @@ public class ExpoSpeechTranscriberModule: Module {
         let locale = Locale(identifier: localeCode)
         return SFSpeechRecognizer(locale: locale) != nil
     }
+    
+    // MARK: - Universal Real-Time Transcription
+    
+    /// Universal real-time transcription that automatically selects the best available API
+    /// - iOS 26+: Uses SpeechTranscriber (better latency and accuracy)
+    /// - iOS 13-25: Uses SFSpeechRecognizer (proven and reliable)
+    private func recordRealTimeAndTranscribeUniversal(language: String?) async -> Void {
+        // Set language if provided
+        if let lang = language {
+            await self.setLanguage(localeCode: lang)
+        }
+        
+        // Check iOS version and use best available API
+        if #available(iOS 26.0, *) {
+            // Use SpeechTranscriber for iOS 26+
+            await self.recordRealTimeWithSpeechTranscriber()
+        } else {
+            // Fallback to SFSpeechRecognizer for iOS 13-25
+            await self.recordRealTimeAndTranscribe()
+        }
+    }
+    
+    /// Real-time transcription using SpeechTranscriber (iOS 26+)
+    /// Provides better latency and accuracy than SFSpeechRecognizer
+    @available(iOS 26.0, *)
+    private func recordRealTimeWithSpeechTranscriber() async -> Void {
+        // Check if already running
+        if audioEngine.isRunning {
+            self.sendEvent("onTranscriptionError", ["message": "Transcription is already running"])
+            return
+        }
+        
+        // Verify SpeechTranscriber is available
+        guard SpeechTranscriber.isAvailable else {
+            self.sendEvent("onTranscriptionError", ["message": "SpeechTranscriber not available on this device"])
+            return
+        }
+        
+        // Check locale support
+        guard await isLocaleSupported(locale: currentLocale) else {
+            self.sendEvent("onTranscriptionError", ["message": "Locale \(currentLocale.identifier) not supported by SpeechTranscriber"])
+            return
+        }
+        
+        // Create SpeechTranscriber with current locale
+        let transcriber = SpeechTranscriber(
+            locale: currentLocale,
+            transcriptionOptions: [],
+            reportingOptions: [.volatileResults],
+            attributeOptions: []
+        )
+        
+        // Ensure model is downloaded
+        do {
+            try await ensureModel(transcriber: transcriber, locale: currentLocale)
+        } catch {
+            self.sendEvent("onTranscriptionError", ["message": "Failed to download transcription model: \(error.localizedDescription)"])
+            return
+        }
+        
+        // Create analyzer with transcriber
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        
+        // Setup audio engine
+        let inputNode = audioEngine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        
+        // Validate audio format
+        guard recordingFormat.channelCount > 0 && recordingFormat.sampleRate > 0 else {
+            self.sendEvent("onTranscriptionError", ["message": "Invalid microphone audio format"])
+            return
+        }
+        
+        // Remove any existing tap
+        inputNode.removeTap(onBus: 0)
+        
+        // Install tap to capture audio
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, when in
+            guard let self = self else { return }
+            
+            // Analyze audio buffer with SpeechTranscriber
+            Task {
+                do {
+                    try await analyzer.analyze(buffer: buffer)
+                } catch {
+                    self.sendEvent("onTranscriptionError", ["message": "Analysis error: \(error.localizedDescription)"])
+                }
+            }
+        }
+        
+        // Start audio engine
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            startedListening = true
+        } catch {
+            self.sendEvent("onTranscriptionError", ["message": "Failed to start audio engine: \(error.localizedDescription)"])
+            inputNode.removeTap(onBus: 0)
+            return
+        }
+        
+        // Stream transcription results
+        Task {
+            do {
+                for try await result in transcriber.results {
+                    let transcribedText = String(result.text.characters)
+                    self.sendEvent(
+                        "onTranscriptionProgress",
+                        ["text": transcribedText, "isFinal": result.isFinal]
+                    )
+                    
+                    if result.isFinal {
+                        self.stopListening()
+                    }
+                }
+            } catch {
+                self.sendEvent("onTranscriptionError", ["message": "Transcription stream error: \(error.localizedDescription)"])
+                self.stopListening()
+            }
+        }
+    }
 }
-

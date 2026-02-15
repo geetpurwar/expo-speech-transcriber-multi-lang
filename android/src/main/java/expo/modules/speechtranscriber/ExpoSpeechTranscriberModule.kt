@@ -75,6 +75,13 @@ class ExpoSpeechTranscriberModule : Module() {
         isLanguageAvailable(localeCode, promise)
       }
     }
+    
+    // NEW: Universal real-time transcription (auto-selects best API)
+    AsyncFunction("recordRealTimeAndTranscribeUniversal") { language: String?, promise: Promise ->
+      mainHandler.post {
+        startListeningUniversal(language, promise)
+      }
+    }
 
     OnDestroy {
       mainHandler.post {
@@ -299,5 +306,32 @@ class ExpoSpeechTranscriberModule : Module() {
       Log.e("ExpoSpeechTranscriber", "Error checking language availability: ${e.message}")
       promise.resolve(false)
     }
+  }
+  
+  // MARK: - Universal Real-Time Transcription
+  
+  /**
+   * Universal real-time transcription that uses the best available API
+   * Android: Uses SpeechRecognizer (only option available)
+   */
+  private fun startListeningUniversal(language: String?, promise: Promise) {
+    // Set language if provided
+    if (language != null) {
+      try {
+        val localeParts = language.replace("-", "_").split("_")
+        currentLocale = when (localeParts.size) {
+          1 -> Locale(localeParts[0])
+          2 -> Locale(localeParts[0], localeParts[1])
+          else -> Locale(localeParts[0], localeParts[1], localeParts[2])
+        }
+      } catch (e: Exception) {
+        Log.e("ExpoSpeechTranscriber", "Error setting language: ${e.message}")
+        promise.reject("LANGUAGE_ERROR", "Failed to set language: ${e.message}")
+        return
+      }
+    }
+    
+    // Use existing startListening implementation (Android only has one API)
+    startListening(promise)
   }
 }

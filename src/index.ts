@@ -76,6 +76,43 @@ export function isLanguageAvailable(localeCode: string): Promise<boolean> {
   return ExpoSpeechTranscriberModule.isLanguageAvailable(localeCode);
 }
 
+// NEW: Universal real-time transcription (auto-selects best API)
+export interface UniversalTranscriptionOptions {
+  /**
+   * Language code in BCP-47 format (e.g., 'en-US', 'es-ES', 'hi-IN')
+   * @default Device language
+   */
+  language?: string;
+}
+
+/**
+ * Start real-time speech transcription using the best available API.
+ * 
+ * APIs used:
+ * - iOS 26+: SpeechTranscriber (lower latency, better accuracy)
+ * - iOS 13-25: SFSpeechRecognizer (proven and reliable)
+ * - Android 13+: SpeechRecognizer (native Android API)
+ * 
+ * @param options - Optional configuration
+ * @param options.language - BCP-47 locale code (e.g., 'es-MX', 'hi-IN'). Defaults to device language.
+ * @returns Promise that resolves when transcription starts
+ * 
+ * @example
+ * // Use device default language
+ * await recordRealTimeAndTranscribeUniversal();
+ * 
+ * @example
+ * // Specify language
+ * await recordRealTimeAndTranscribeUniversal({ language: 'es-MX' });
+ */
+export function recordRealTimeAndTranscribeUniversal(
+  options?: UniversalTranscriptionOptions
+): Promise<void> {
+  return ExpoSpeechTranscriberModule.recordRealTimeAndTranscribeUniversal(
+    options?.language ?? null
+  );
+}
+
 export function useRealTimeTranscription() {
   const [text, setText] = useState('');
   const [isFinal, setIsFinal] = useState(false);
