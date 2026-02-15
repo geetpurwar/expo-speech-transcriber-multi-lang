@@ -11,7 +11,8 @@ export type TranscriptionProgressPayload = {
 
 
 export type TranscriptionErrorPayload = {
-  error: string;
+  message?: string;
+  error?: string;
 };
 
 export type ExpoSpeechTranscriberModuleEvents = {
@@ -27,6 +28,16 @@ export type ChangeEventPayload = {
 export type PermissionTypes = 'authorized' | 'denied' | 'restricted' | 'notDetermined';
 
 export type MicrophonePermissionTypes = 'granted' | 'denied'
+
+export type MicrophoneStatus = {
+  permissionStatus: MicrophonePermissionTypes | 'undetermined';
+  isInputAvailable: boolean;
+  hasAudioInputRoute: boolean;
+  isRecording: boolean;
+  isBusy: boolean;
+  canRecord: boolean;
+  reason: string | null;
+}
 
 export type ExpoSpeechTranscriberViewProps = {
   url: string;

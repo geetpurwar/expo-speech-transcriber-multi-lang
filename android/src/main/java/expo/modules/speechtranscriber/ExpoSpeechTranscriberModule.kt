@@ -51,6 +51,12 @@ class ExpoSpeechTranscriberModule : Module() {
         requestMicrophonePermissionsInternal(promise)
       }
     }
+
+    AsyncFunction("getMicrophoneStatus") { promise: Promise ->
+      mainHandler.post {
+        promise.resolve(getMicrophoneStatus())
+      }
+    }
     
     AsyncFunction("setLanguage") { localeCode: String, promise: Promise ->
       mainHandler.post {
@@ -86,6 +92,13 @@ class ExpoSpeechTranscriberModule : Module() {
   private fun startListening(promise: Promise) {
     val context = appContext.reactContext ?: run {
       sendEvent("onTranscriptionError", mapOf("message" to "Context is not available"))
+      promise.resolve(false)
+      return
+    }
+
+    if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE)) {
+      val message = "No microphone hardware found on this device."
+      sendEvent("onTranscriptionError", mapOf("message" to message))
       promise.resolve(false)
       return
     }
@@ -299,5 +312,32 @@ class ExpoSpeechTranscriberModule : Module() {
       Log.e("ExpoSpeechTranscriber", "Error checking language availability: ${e.message}")
       promise.resolve(false)
     }
+  }
+
+  private fun getMicrophoneStatus(): Map<String, Any?> {
+    val context = appContext.reactContext
+    val hasMicrophone = context?.packageManager?.hasSystemFeature(PackageManager.FEATURE_MICROPHONE) ?: false
+    val permissionGranted = context != null &&
+      ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    val recognizerAvailable = context != null && SpeechRecognizer.isRecognitionAvailable(context)
+    val canRecord = hasMicrophone && permissionGranted && recognizerAvailable && !isRecording
+
+    val reason = when {
+      !hasMicrophone -> "No microphone hardware found on this device"
+      !permissionGranted -> "Microphone permission not granted"
+      !recognizerAvailable -> "Speech recognizer is unavailable on this device"
+      isRecording -> "Speech recognizer is already running"
+      else -> null
+    }
+
+    return mapOf(
+      "permissionStatus" to if (permissionGranted) "granted" else "denied",
+      "isInputAvailable" to hasMicrophone,
+      "hasAudioInputRoute" to hasMicrophone,
+      "isRecording" to isRecording,
+      "isBusy" to isRecording,
+      "canRecord" to canRecord,
+      "reason" to reason
+    )
   }
 }

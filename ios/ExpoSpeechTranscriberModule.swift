@@ -10,6 +10,13 @@ public class ExpoSpeechTranscriberModule: Module {
     private var bufferRecognitionTask: SFSpeechRecognitionTask?
     private var startedListening = false
     private var currentLocale: Locale = Locale(identifier: "en_US") // Default to English
+    private var interruptionObserver: NSObjectProtocol?
+    private var routeChangeObserver: NSObjectProtocol?
+
+    deinit {
+        cleanupAudioSessionObservers()
+        stopListening()
+    }
     
     public func definition() -> ModuleDefinition {
         Name("ExpoSpeechTranscriber")
@@ -60,6 +67,10 @@ public class ExpoSpeechTranscriberModule: Module {
         
         AsyncFunction("requestMicrophonePermissions") { () async -> String in
             return await self.requestMicrophonePermissions()
+        }
+
+        Function("getMicrophoneStatus") { () -> [String: Any] in
+            return self.getMicrophoneStatus()
         }
         
         
@@ -171,22 +182,59 @@ public class ExpoSpeechTranscriberModule: Module {
     
     // startRecordingAndTranscription using SFSpeechRecognizer
     private func recordRealTimeAndTranscribe() async -> Void  {
+        if audioEngine.isRunning {
+            self.sendEvent("onTranscriptionError", ["message": "Transcription is already running"])
+            return
+        }
+
+        let microphonePermission = await self.ensureMicrophonePermission()
+        guard microphonePermission == "granted" else {
+            self.sendEvent("onTranscriptionError", ["message": "Microphone permission is not granted"])
+            return
+        }
+
+        let session = AVAudioSession.sharedInstance()
+        guard session.isInputAvailable else {
+            self.sendEvent("onTranscriptionError", ["message": "Microphone is currently unavailable"])
+            return
+        }
+
         let speechRecognizer = SFSpeechRecognizer(locale: currentLocale)
         guard let recognizer = speechRecognizer else {
             self.sendEvent("onTranscriptionError", ["message": "Speech recognizer not available for locale: \(currentLocale.identifier)"])
             return
         }
+
+        guard recognizer.isAvailable else {
+            self.sendEvent("onTranscriptionError", ["message": "Speech recognizer is currently unavailable"])
+            return
+        }
+
+        do {
+            try self.configureAndActivateAudioSession()
+        } catch {
+            self.sendEvent("onTranscriptionError", ["message": error.localizedDescription])
+            return
+        }
+
+        self.setupAudioSessionObserversIfNeeded()
+
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
             self.sendEvent("onTranscriptionError", ["message": "Unable to create recognition request"])
             return
         }
         recognitionRequest.shouldReportPartialResults = true
-        
+
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
+        guard recordingFormat.channelCount > 0 && recordingFormat.sampleRate > 0 else {
+            self.sendEvent("onTranscriptionError", ["message": "Invalid microphone audio format"])
+            self.stopListening()
+            return
+        }
         inputNode.removeTap(onBus: 0)
-        
+
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, when in
             recognitionRequest.append(buffer)
         }
@@ -196,6 +244,7 @@ public class ExpoSpeechTranscriberModule: Module {
             try audioEngine.start()
             startedListening = true
         } catch {
+            self.stopListening()
             self.sendEvent("onTranscriptionError", ["message": error.localizedDescription])
             return
         }
@@ -224,12 +273,16 @@ public class ExpoSpeechTranscriberModule: Module {
     }
     
     private func stopListening() {
-        audioEngine.stop()
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
         audioEngine.inputNode.removeTap(onBus: 0)
-        //recognitionRequest?.endAudio()
+        recognitionRequest?.endAudio()
         recognitionRequest = nil
         recognitionTask?.cancel()
         recognitionTask = nil
+        startedListening = false
+        deactivateAudioSessionIfPossible()
     }
     
     
@@ -417,5 +470,148 @@ public class ExpoSpeechTranscriberModule: Module {
         let locale = Locale(identifier: localeCode)
         return SFSpeechRecognizer(locale: locale) != nil
     }
-}
 
+    private func ensureMicrophonePermission() async -> String {
+        let session = AVAudioSession.sharedInstance()
+        switch session.recordPermission {
+        case .granted:
+            return "granted"
+        case .denied:
+            return "denied"
+        case .undetermined:
+            return await requestMicrophonePermissions()
+        @unknown default:
+            return "denied"
+        }
+    }
+
+    private func configureAndActivateAudioSession() throws {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.record, mode: .measurement, options: [])
+            try session.setActive(true, options: [])
+        } catch {
+            throw NSError(
+                domain: "ExpoSpeechTranscriber",
+                code: 500,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to activate microphone session. Another call or app may be using audio."]
+            )
+        }
+    }
+
+    private func deactivateAudioSessionIfPossible() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        } catch {
+            // Best effort only. Keep silent to avoid noisy logs for expected teardown races.
+        }
+    }
+
+    private func setupAudioSessionObserversIfNeeded() {
+        if interruptionObserver == nil {
+            interruptionObserver = NotificationCenter.default.addObserver(
+                forName: AVAudioSession.interruptionNotification,
+                object: AVAudioSession.sharedInstance(),
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleAudioSessionInterruption(notification)
+            }
+        }
+
+        if routeChangeObserver == nil {
+            routeChangeObserver = NotificationCenter.default.addObserver(
+                forName: AVAudioSession.routeChangeNotification,
+                object: AVAudioSession.sharedInstance(),
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleAudioRouteChange(notification)
+            }
+        }
+    }
+
+    private func cleanupAudioSessionObservers() {
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver)
+            self.interruptionObserver = nil
+        }
+
+        if let routeChangeObserver {
+            NotificationCenter.default.removeObserver(routeChangeObserver)
+            self.routeChangeObserver = nil
+        }
+    }
+
+    private func handleAudioSessionInterruption(_ notification: Notification) {
+        guard
+            let userInfo = notification.userInfo,
+            let interruptionTypeRaw = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+            let interruptionType = AVAudioSession.InterruptionType(rawValue: interruptionTypeRaw)
+        else {
+            return
+        }
+
+        if interruptionType == .began && (startedListening || audioEngine.isRunning) {
+            stopListening()
+            sendEvent("onTranscriptionError", ["message": "Recording interrupted by another audio source"])
+        }
+    }
+
+    private func handleAudioRouteChange(_ notification: Notification) {
+        guard
+            let userInfo = notification.userInfo,
+            let routeChangeReasonRaw = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+            let routeChangeReason = AVAudioSession.RouteChangeReason(rawValue: routeChangeReasonRaw)
+        else {
+            return
+        }
+
+        switch routeChangeReason {
+        case .oldDeviceUnavailable, .noSuitableRouteForCategory:
+            if startedListening || audioEngine.isRunning {
+                stopListening()
+                sendEvent("onTranscriptionError", ["message": "Microphone input became unavailable"])
+            }
+        default:
+            break
+        }
+    }
+
+    private func getMicrophoneStatus() -> [String: Any] {
+        let session = AVAudioSession.sharedInstance()
+        let permissionStatus: String
+        switch session.recordPermission {
+        case .granted:
+            permissionStatus = "granted"
+        case .denied:
+            permissionStatus = "denied"
+        case .undetermined:
+            permissionStatus = "undetermined"
+        @unknown default:
+            permissionStatus = "undetermined"
+        }
+
+        let hasAudioInputRoute = !(session.availableInputs ?? []).isEmpty
+        let isInputAvailable = session.isInputAvailable
+        let isBusy = !isInputAvailable
+        let canRecord = permissionStatus == "granted" && isInputAvailable && hasAudioInputRoute
+
+        var reason: String? = nil
+        if permissionStatus != "granted" {
+            reason = "Microphone permission not granted"
+        } else if !hasAudioInputRoute {
+            reason = "No audio input route available"
+        } else if !isInputAvailable {
+            reason = "Microphone is currently unavailable"
+        }
+
+        return [
+            "permissionStatus": permissionStatus,
+            "isInputAvailable": isInputAvailable,
+            "hasAudioInputRoute": hasAudioInputRoute,
+            "isRecording": audioEngine.isRunning,
+            "isBusy": isBusy,
+            "canRecord": canRecord,
+            "reason": reason ?? NSNull()
+        ]
+    }
+}
