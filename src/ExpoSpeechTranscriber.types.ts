@@ -11,7 +11,7 @@ export type TranscriptionProgressPayload = {
 
 
 export type TranscriptionErrorPayload = {
-  error: string;
+  message: string;
 };
 
 export type ExpoSpeechTranscriberModuleEvents = {

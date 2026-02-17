@@ -14,6 +14,14 @@ declare class ExpoSpeechTranscriberNative extends NativeModule<ExpoSpeechTranscr
   requestMicrophonePermissions(): Promise<MicrophonePermissionTypes>;
   isRecording(): boolean;
   isAnalyzerAvailable(): boolean;
+  realtimeBufferTranscribe(buffer: number[], sampleRate: number): Promise<void>;
+  stopBufferTranscription(): void;
+  setLanguage(localeCode: string): Promise<void>;
+  getAvailableLanguages(): Promise<string[]>;
+  getCurrentLanguage(): Promise<string>;
+  isLanguageAvailable(localeCode: string): Promise<boolean>;
+  recordRealTimeAndTranscribeUniversal(language: string | null): Promise<void>;
+  recordRealTimeAndTranscribeWithSpeechTranscriber(language: string | null): Promise<void>;
 }
 
 const ExpoSpeechTranscriberModule =

@@ -83,6 +83,14 @@ class ExpoSpeechTranscriberModule : Module() {
       }
     }
 
+    // iOS 26+ only: not available on Android
+    AsyncFunction("recordRealTimeAndTranscribeWithSpeechTranscriber") { language: String?, promise: Promise ->
+      promise.reject(
+        "ERR_NOT_SUPPORTED",
+        "recordRealTimeAndTranscribeWithSpeechTranscriber is only available on iOS 26+. Use recordRealTimeAndTranscribeUniversal instead."
+      )
+    }
+
     OnDestroy {
       mainHandler.post {
         cleanup()

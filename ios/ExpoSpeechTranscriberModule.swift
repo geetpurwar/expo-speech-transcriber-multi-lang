@@ -107,6 +107,19 @@ public class ExpoSpeechTranscriberModule: Module {
         AsyncFunction("recordRealTimeAndTranscribeUniversal") { (language: String?) async -> Void in
             await self.recordRealTimeAndTranscribeUniversal(language: language)
         }
+        
+        // iOS 26+ only: Real-time transcription using SpeechTranscriber directly
+        AsyncFunction("recordRealTimeAndTranscribeWithSpeechTranscriber") { (language: String?) async throws -> Void in
+            if #available(iOS 26.0, *) {
+                if let lang = language {
+                    await self.setLanguage(localeCode: lang)
+                }
+                await self.recordRealTimeWithSpeechTranscriber()
+            } else {
+                throw NSError(domain: "ExpoSpeechTranscriber", code: 501,
+                              userInfo: [NSLocalizedDescriptionKey: "recordRealTimeAndTranscribeWithSpeechTranscriber requires iOS 26.0 or later"])
+            }
+        }
     }
     
     // MARK: - Private Implementation Methods
@@ -504,7 +517,7 @@ public class ExpoSpeechTranscriberModule: Module {
             // Analyze audio buffer with SpeechTranscriber
             Task {
                 do {
-                    try await analyzer.analyze(buffer: buffer)
+                    _ = try await analyzer.analyzeSequence(buffer: buffer)
                 } catch {
                     self.sendEvent("onTranscriptionError", ["message": "Analysis error: \(error.localizedDescription)"])
                 }

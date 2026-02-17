@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - iOS 26 SpeechTranscriber Direct API + Bug Fixes
+
+### Added
+
+- **`recordRealTimeAndTranscribeWithSpeechTranscriber(options?)`** (iOS 26+ only)
+  - New function that explicitly targets the Apple `SpeechTranscriber` API introduced in iOS 26
+  - Accepts an optional `language` BCP-47 locale code inline — no need to call `setLanguage()` first
+  - Throws a descriptive `NSError` (code 501) on iOS < 26
+  - Returns `ERR_NOT_SUPPORTED` rejection on Android with a helpful message pointing to `recordRealTimeAndTranscribeUniversal`
+  - Reuses the existing `recordRealTimeWithSpeechTranscriber()` private implementation — consistent behaviour with the Universal API on iOS 26+
+  - Full TypeScript declaration added to `ExpoSpeechTranscriberModule.ts`
+  - Full JSDoc with usage examples exported from `index.ts`
+
+- **Android stub for `recordRealTimeAndTranscribeWithSpeechTranscriber`**
+  - Kotlin module now declares the function and rejects with `ERR_NOT_SUPPORTED` instead of crashing
+
+### Fixed
+
+- **`TranscriptionErrorPayload.error` → `message` field mismatch**
+  - `ExpoSpeechTranscriber.types.ts` previously declared `error: string` but both Swift and Kotlin send `"message"` as the key
+  - This caused `error` state in `useRealTimeTranscription()` to always be `undefined`
+  - Fixed: renamed field to `message: string` in the type and updated the hook to read `payload.message`
+
+- **Missing native method declarations in `ExpoSpeechTranscriberModule.ts`**
+  - The TypeScript native class declaration was missing `realtimeBufferTranscribe`, `stopBufferTranscription`, `setLanguage`, `getAvailableLanguages`, `getCurrentLanguage`, `isLanguageAvailable`, and `recordRealTimeAndTranscribeUniversal`
+  - All methods are now fully declared, giving correct TypeScript types across the board
+
+---
+
 ## [Unreleased] - Multi-Language Support
 
 ### Added
