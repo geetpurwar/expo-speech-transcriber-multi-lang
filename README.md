@@ -179,6 +179,47 @@ SpeechTranscriber.stopBufferTranscription();
 
 See the [BufferTranscriptionExample](./example/BufferTranscriptionExample.tsx) for a complete implementation.
 
+### Integration with Expo Audio Studio
+
+You can easily pipe audio from `expo-audio-studio` directly to the transcriber. This works cross-platform and uses the optimal transcription engine (SpeechAnalyzer on iOS 26+, SFSpeechRecognizer on older iOS, etc).
+
+```typescript
+import { AudioRecorder } from 'expo-audio-studio';
+import * as SpeechTranscriber from 'expo-speech-transcriber';
+
+// ... inside your component or function ...
+
+// 1. Request permissions
+const permission = await SpeechTranscriber.requestPermissions(); 
+// ... handle permission ...
+
+// 2. Start recording with expo-audio-studio
+await AudioRecorder.startRecording({
+    sampleRate: 16000,
+    channels: 1,
+    encoding: 'pcm_32bit', // Recommended for best quality
+    bufferDurationSeconds: 0.1, // 100ms updates
+    output: {
+        primary: { enabled: false } // We don't need a file, just the stream
+    },
+    onAudioStream: async (data) => {
+        // data.data is typically the buffer. Ensure it matches what realtimeBufferTranscribe expects (Float32Array or number[])
+        // If expo-audio-studio returns PCM data, you might need to convert it if it's not already in the right format.
+        
+        if (data.data) {
+             await SpeechTranscriber.realtimeBufferTranscribe(data.data, 16000);
+        }
+    }
+});
+
+// 3. Listen for results (same hook as always)
+const { text } = SpeechTranscriber.useRealTimeTranscription();
+
+// 4. Stop
+await AudioRecorder.stopRecording();
+SpeechTranscriber.stopBufferTranscription();
+```
+
 
 
 ## API Reference

@@ -106,7 +106,95 @@ public class ExpoSpeechTranscriberModule: Module {
     
     // MARK: - Private Implementation Methods
     
+    // State for SpeechAnalyzer buffer transcription (iOS 26+)
+    // Stored as Any because SpeechAnalyzer and AnalyzerInput are only available on iOS 26+
+    // and stored properties cannot have @available usage restrictions in a class available on older iOS.
+    private var bufferAnalyzer: Any? 
+    private var bufferStreamContinuation: Any?
+    private var bufferAnalysisTask: Task<Void, Never>?
+
     private func realtimeBufferTranscribe(buffer: [Float32], sampleRate: Double) async -> Void {
+        if #available(iOS 26.0, *) {
+            await realtimeBufferTranscribeWithAnalyzer(buffer: buffer, sampleRate: sampleRate)
+        } else {
+            await realtimeBufferTranscribeLegacy(buffer: buffer, sampleRate: sampleRate)
+        }
+    }
+
+    @available(iOS 26.0, *)
+    private func realtimeBufferTranscribeWithAnalyzer(buffer: [Float32], sampleRate: Double) async {
+        // Initialize analyzer and stream if not already exists
+        if bufferAnalyzer == nil {
+            guard await isLocaleSupported(locale: currentLocale) else {
+                self.sendEvent("onTranscriptionError", ["message": "Language '\(currentLocale.identifier)' is not supported for SpeechAnalyzer"])
+                return
+            }
+            
+            let transcriber = SpeechTranscriber(
+                locale: currentLocale,
+                transcriptionOptions: [],
+                reportingOptions: [.volatileResults],
+                attributeOptions: []
+            )
+            
+            do {
+                try await ensureModel(transcriber: transcriber, locale: currentLocale)
+            } catch {
+                self.sendEvent("onTranscriptionError", ["message": "Failed to ensure model: \(error.localizedDescription)"])
+                return
+            }
+            
+            let analyzer = SpeechAnalyzer(modules: [transcriber])
+            self.bufferAnalyzer = analyzer
+            
+            // Create the stream and store continuation
+            let stream = AsyncStream<AnalyzerInput> { continuation in
+                self.bufferStreamContinuation = continuation
+            }
+            
+            // Start analysis task
+            bufferAnalysisTask = Task {
+                do {
+                    _ = try await analyzer.start(inputSequence: stream)
+                } catch {
+                    self.sendEvent("onTranscriptionError", ["message": "Buffer Analyzer error: \(error.localizedDescription)"])
+                }
+            }
+            
+            // Start result processing
+            Task {
+                for try await result in transcriber.results {
+                    let recognizedText = String(result.text.characters)
+                    self.sendEvent(
+                        "onTranscriptionProgress",
+                        ["text": recognizedText, "isFinal": result.isFinal]
+                    )
+                }
+            }
+        }
+        
+        // Convert Float32 buffer to AVAudioPCMBuffer
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(buffer.count)) else {
+            self.sendEvent("onTranscriptionError", ["message": "Unable to create PCM buffer"])
+            return
+        }
+        
+        pcmBuffer.frameLength = AVAudioFrameCount(buffer.count)
+        if let channelData = pcmBuffer.floatChannelData {
+            buffer.withUnsafeBufferPointer { bufferPointer in
+                guard let sourceAddress = bufferPointer.baseAddress else { return }
+                memcpy(channelData[0], sourceAddress, buffer.count * MemoryLayout<Float>.size)
+            }
+        }
+        
+        // Yield to analyzer
+        if let continuation = bufferStreamContinuation as? AsyncStream<AnalyzerInput>.Continuation {
+            continuation.yield(AnalyzerInput(buffer: pcmBuffer))
+        }
+    }
+
+    private func realtimeBufferTranscribeLegacy(buffer: [Float32], sampleRate: Double) async -> Void {
         if bufferRecognitionRequest == nil {
             let speechRecognizer = SFSpeechRecognizer(locale: currentLocale)
             guard let recognizer = speechRecognizer else {
@@ -162,11 +250,23 @@ public class ExpoSpeechTranscriberModule: Module {
     }
     
     private func stopBufferTranscription() {
+        // Legacy cleanup
         bufferRecognitionRequest?.endAudio()
         bufferRecognitionRequest = nil
-        
         bufferRecognitionTask?.cancel()
         bufferRecognitionTask = nil
+        
+        // SpeechAnalyzer cleanup (iOS 26+)
+        if #available(iOS 26.0, *) {
+            if let continuation = bufferStreamContinuation as? AsyncStream<AnalyzerInput>.Continuation {
+                continuation.finish()
+            }
+            bufferStreamContinuation = nil
+            // Analyzer tasks should finish when stream finishes
+            bufferAnalysisTask?.cancel() // Ensure task is cancelled just in case
+            bufferAnalysisTask = nil
+            bufferAnalyzer = nil
+        }
     }
     
     // startRecordingAndTranscription using SFSpeechRecognizer or SpeechAnalyzer (iOS 26+)
