@@ -53,22 +53,27 @@ export function isAnalyzerAvailable(): boolean {
   return ExpoSpeechTranscriberModule.isAnalyzerAvailable();
 }
 
-export function realtimeBufferTranscribe(
-  buffer: number[] | Float32Array,
-  sampleRate: number,
-): Promise<void> {
-  const bufferArray = Array.isArray(buffer) ? buffer : Array.from(buffer);
-  return ExpoSpeechTranscriberModule.realtimeBufferTranscribe(
-    bufferArray,
-    sampleRate,
-  );
+// Transcribe raw audio buffer (Float32Array)
+export function realtimeBufferTranscribe(buffer: number[] | Float32Array, sampleRate: number): Promise<void> {
+  // Convert Float32Array to regular array if needed, as bridge handling varies
+  const bufferArray = buffer instanceof Float32Array ? Array.from(buffer) : buffer;
+  return ExpoSpeechTranscriberModule.realtimeBufferTranscribe(bufferArray, sampleRate);
+}
+
+// Transcribe raw audio buffer (Base64 string of Int16 PCM)
+// This is more performant for use with expo-audio-studio
+export function realtimeBufferTranscribeBase64(base64Idx: string, sampleRate: number): Promise<void> {
+  return ExpoSpeechTranscriberModule.realtimeBufferTranscribeBase64(base64Idx, sampleRate);
 }
 
 export function stopBufferTranscription(): void {
   return ExpoSpeechTranscriberModule.stopBufferTranscription();
 }
 
-// Language configuration functions
+/**
+ * Configure the recognition language.
+ * @param localeCode A BCP-47 language tag (e.g., "en-US", "fr-FR")
+ */
 export function setLanguage(localeCode: string): Promise<void> {
   return ExpoSpeechTranscriberModule.setLanguage(localeCode);
 }
@@ -115,13 +120,13 @@ export function useRealTimeTranscription() {
   }, []);
 
 
-    useEffect(() => {
-      if (isRecording) {
-        setText('');
-        setIsFinal(false);
-        setError(null);
-      }
-    }, [isRecording]);
+  useEffect(() => {
+    if (isRecording) {
+      setText('');
+      setIsFinal(false);
+      setError(null);
+    }
+  }, [isRecording]);
 
   return { text, isFinal, error, isRecording };
 }

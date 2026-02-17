@@ -197,17 +197,18 @@ const permission = await SpeechTranscriber.requestPermissions();
 await AudioRecorder.startRecording({
     sampleRate: 16000,
     channels: 1,
-    encoding: 'pcm_32bit', // Recommended for best quality
+    encoding: 'pcm_16bit', // Use standard 16-bit PCM (default for Audio Studio)
     bufferDurationSeconds: 0.1, // 100ms updates
     output: {
         primary: { enabled: false } // We don't need a file, just the stream
     },
     onAudioStream: async (data) => {
-        // data.data is typically the buffer. Ensure it matches what realtimeBufferTranscribe expects (Float32Array or number[])
-        // If expo-audio-studio returns PCM data, you might need to convert it if it's not already in the right format.
-        
+        // data.data is the Base64 string of the audio buffer
+        // expo-speech-transcriber's `realtimeBufferTranscribeBase64` handles
+        // the Base64 decoding and Int16 -> Float32 conversion natively for performance.
+
         if (data.data) {
-             await SpeechTranscriber.realtimeBufferTranscribe(data.data, 16000);
+             await SpeechTranscriber.realtimeBufferTranscribeBase64(data.data, 16000);
         }
     }
 });

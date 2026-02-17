@@ -78,6 +78,10 @@ public class ExpoSpeechTranscriberModule: Module {
             return false
         }
         
+        AsyncFunction("realtimeBufferTranscribeBase64") { (base64: String, sampleRate: Double) async -> Void in
+            await self.realtimeBufferTranscribeBase64(base64: base64, sampleRate: sampleRate)
+        }
+
         AsyncFunction("realtimeBufferTranscribe") { (buffer: [Float32], sampleRate: Double) async -> Void in
             await self.realtimeBufferTranscribe(buffer: buffer, sampleRate: sampleRate)
         }
@@ -105,6 +109,31 @@ public class ExpoSpeechTranscriberModule: Module {
     }
     
     // MARK: - Private Implementation Methods
+    
+    private func realtimeBufferTranscribeBase64(base64: String, sampleRate: Double) async -> Void {
+        guard let data = Data(base64Encoded: base64) else {
+            self.sendEvent("onTranscriptionError", ["message": "Invalid Base64 string"])
+            return
+        }
+        
+        // Expo Audio Studio returns 16-bit PCM. Convert to Float32.
+        let byteCount = data.count
+        let int16Count = byteCount / 2
+        
+        var int16Buffer = [Int16](repeating: 0, count: int16Count)
+        _ = int16Buffer.withUnsafeMutableBytes { data.copyBytes(to: $0) }
+        
+        var floatBuffer = [Float32](repeating: 0.0, count: int16Count)
+        
+        // Convert Int16 to Float32 and normalize to [-1.0, 1.0]
+        // This simple loop is performant enough for real-time 50ms chunks.
+        // Accelerate framework could be used for further optimization but adds complexity.
+        for i in 0..<int16Count {
+            floatBuffer[i] = Float(int16Buffer[i]) / 32768.0
+        }
+        
+        await realtimeBufferTranscribe(buffer: floatBuffer, sampleRate: sampleRate)
+    }
     
     // State for SpeechAnalyzer buffer transcription (iOS 26+)
     // Stored as Any because SpeechAnalyzer and AnalyzerInput are only available on iOS 26+
