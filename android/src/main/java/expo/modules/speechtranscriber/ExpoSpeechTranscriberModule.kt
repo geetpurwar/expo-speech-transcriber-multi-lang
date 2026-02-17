@@ -75,6 +75,19 @@ class ExpoSpeechTranscriberModule : Module() {
         isLanguageAvailable(localeCode, promise)
       }
     }
+    
+    // Stubs for buffer-based transcription (Not supported on Android's standard SpeechRecognizer)
+    AsyncFunction("realtimeBufferTranscribe") { _: Any, _: Double, promise: Promise ->
+        promise.reject("ERR_NOT_SUPPORTED", "Android SpeechRecognizer does not support external audio buffers. Use startActiveListening() to use the internal microphone.")
+    }
+
+    AsyncFunction("realtimeBufferTranscribeBase64") { _: String, _: Double, promise: Promise ->
+        promise.reject("ERR_NOT_SUPPORTED", "Android SpeechRecognizer does not support external audio buffers. Use startActiveListening() to use the internal microphone.")
+    }
+    
+    Function("stopBufferTranscription") { 
+        // No-op on Android
+    }
 
     OnDestroy {
       mainHandler.post {

@@ -548,9 +548,8 @@ public class ExpoSpeechTranscriberModule: Module {
     
     @available(iOS 26.0, *)
     private func isLocaleSupported(locale: Locale) async -> Bool {
-        guard SpeechTranscriber.isAvailable else { return false }
-        let supported = await DictationTranscriber.supportedLocales
-        return supported.map { $0.identifier(.bcp47) }.contains(locale.identifier(.bcp47))
+        // FIX: Use SpeechTranscriber.supportedLocales
+        return await SpeechTranscriber.supportedLocales.map { $0.identifier(.bcp47) }.contains(locale.identifier(.bcp47))
     }
     
     @available(iOS 26.0, *)
