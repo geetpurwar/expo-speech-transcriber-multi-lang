@@ -9,6 +9,15 @@ import type {
 } from './ExpoSpeechTranscriber.types';
 import { useState, useEffect } from 'react';
 
+// Unified entry point for real-time transcription
+// Automatically selects the appropriate engine based on platform/OS:
+// - Android: SpeechRecognizer
+// - iOS 26+: SpeechAnalyzer
+// - iOS < 26: SFSpeechRecognizer
+export function startActiveListening(): Promise<void> {
+  return ExpoSpeechTranscriberModule.recordRealTimeAndTranscribe();
+}
+
 export function recordRealTimeAndTranscribe(): Promise<void> {
   return ExpoSpeechTranscriberModule.recordRealTimeAndTranscribe();
 }

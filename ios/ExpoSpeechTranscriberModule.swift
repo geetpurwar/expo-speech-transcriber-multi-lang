@@ -169,8 +169,98 @@ public class ExpoSpeechTranscriberModule: Module {
         bufferRecognitionTask = nil
     }
     
-    // startRecordingAndTranscription using SFSpeechRecognizer
-    private func recordRealTimeAndTranscribe() async -> Void  {
+    // startRecordingAndTranscription using SFSpeechRecognizer or SpeechAnalyzer (iOS 26+)
+    private func recordRealTimeAndTranscribe() async -> Void {
+        if #available(iOS 26.0, *) {
+            await recordRealTimeAndTranscribeWithAnalyzer()
+        } else {
+            await recordRealTimeAndTranscribeLegacy()
+        }
+    }
+
+    @available(iOS 26.0, *)
+    private func recordRealTimeAndTranscribeWithAnalyzer() async {
+        guard await isLocaleSupported(locale: currentLocale) else {
+            self.sendEvent("onTranscriptionError", ["message": "Language '\(currentLocale.identifier)' is not supported for SpeechAnalyzer"])
+            return
+        }
+        
+        // Ensure model is available
+        let transcriber = SpeechTranscriber(
+            locale: currentLocale,
+            transcriptionOptions: [],
+            reportingOptions: [.volatileResults],
+            attributeOptions: []
+        )
+        
+        do {
+            try await ensureModel(transcriber: transcriber, locale: currentLocale)
+        } catch {
+            self.sendEvent("onTranscriptionError", ["message": "Failed to download/ensure model: \(error.localizedDescription)"])
+            return
+        }
+
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let inputNode = audioEngine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        
+        // Use AsyncStream to bridge the audio buffer block to the analyzer
+        let audioStream = AsyncStream<AnalyzerInput> { continuation in
+            inputNode.removeTap(onBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, when in
+                continuation.yield(AnalyzerInput(buffer: buffer))
+            }
+            
+             // Handle stream termination cleanup if needed
+             // continuation.onTermination = { @Sendable _ in ... }
+        }
+        
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            startedListening = true
+        } catch {
+            self.sendEvent("onTranscriptionError", ["message": "Audio Engine failed to start: \(error.localizedDescription)"])
+            return
+        }
+        
+        // Start analysis task
+        Task {
+            do {
+                // Feed audio stream to analyzer
+                // Note: The SpeechAnalyzer API might expect an AsyncSequence of buffers or similar.
+                // Assuming `analyze(audioStream)` or similar exists based on general swift concurrency patterns for this API.
+                // If the specific API requires pushing buffers manually, we'd adjust.
+                // Based on `analyzeSequence(from: AVAudioFile)`, there should be a streaming equivalent.
+                // Let's assume `analyze(audioStream)` for now given the context of "realtime".
+                // If not, we might need a push-based approach if the API exposes one.
+                
+                // Correction: The WWDC examples typically show using an `AVAudioSession` and feeding it,
+                // or just `files`. If we need custom audio input (like from Expo's engine setup),
+                // we might need to conform to an AsyncSequence returning buffers.
+                
+                // Correct API found: start(inputSequence:)
+                _ = try await analyzer.start(inputSequence: audioStream)
+            } catch {
+                self.sendEvent("onTranscriptionError", ["message": "Analyzer error: \(error.localizedDescription)"])
+            }
+            
+            self.stopListening()
+        }
+        
+        // Handle results concurrently
+        Task {
+            for try await result in transcriber.results {
+                let recognizedText = String(result.text.characters)
+                self.sendEvent(
+                    "onTranscriptionProgress",
+                    ["text": recognizedText, "isFinal": result.isFinal]
+                )
+            }
+        }
+    }
+
+    private func recordRealTimeAndTranscribeLegacy() async -> Void  {
         let speechRecognizer = SFSpeechRecognizer(locale: currentLocale)
         guard let recognizer = speechRecognizer else {
             self.sendEvent("onTranscriptionError", ["message": "Speech recognizer not available for locale: \(currentLocale.identifier)"])

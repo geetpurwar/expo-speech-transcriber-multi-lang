@@ -60,6 +60,11 @@ For more details, see Apple's guidelines on [requesting access to protected reso
 
 Start transcribing speech in real-time. This does not require `expo-audio`.
 
+The `startActiveListening()` function automatically selects the best transcription engine for the current device:
+- **Android**: Uses standard `SpeechRecognizer`
+- **iOS 26+**: Uses the new `SpeechAnalyzer` API
+- **iOS < 26**: Falls back to `SFSpeechRecognizer`
+
 ```typescript
 import { Platform } from "react-native";
 import * as SpeechTranscriber from "expo-speech-transcriber";
@@ -84,8 +89,8 @@ if (micPermission !== "granted") {
 const { text, isFinal, error, isRecording } =
   SpeechTranscriber.useRealTimeTranscription();
 
-// Start transcription
-await SpeechTranscriber.recordRealTimeAndTranscribe();
+// Start transcription (automatically selects engine)
+await SpeechTranscriber.startActiveListening();
 
 // Stop when done
 SpeechTranscriber.stopListening();
@@ -205,6 +210,18 @@ Request microphone permission.
 
 ```typescript
 const status = await SpeechTranscriber.requestMicrophonePermissions();
+```
+
+### `startActiveListening()`
+
+Start real-time speech transcription using the optimal engine for the device (Android, iOS SpeechAnalyzer, or iOS SFSpeechRecognizer). Listen for events via `useRealTimeTranscription` hook.
+
+**Returns:** `Promise<void>`
+
+**Example:**
+
+```typescript
+await SpeechTranscriber.startActiveListening();
 ```
 
 ### `recordRealTimeAndTranscribe()`
