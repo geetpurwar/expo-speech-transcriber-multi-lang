@@ -2,6 +2,12 @@ import ExpoModulesCore
 import Speech
 import AVFoundation
 
+// SpeechAnalyzer, SpeechTranscriber, AnalyzerInput and AssetInventory are only
+// available in the iOS 26 SDK, which ships with Xcode 26 / Swift 6.2+.
+// Using #if swift(>=6.2) is the only reliable compile-time gate that works
+// regardless of build system (EAS, local, CI) — no xcconfig flags required.
+// The @available(iOS 26.0, *) guards additionally enforce the runtime OS check.
+
 public class ExpoSpeechTranscriberModule: Module {
     private var audioEngine = AVAudioEngine()
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
@@ -9,10 +15,10 @@ public class ExpoSpeechTranscriberModule: Module {
     private var recognitionTask: SFSpeechRecognitionTask?
     private var bufferRecognitionTask: SFSpeechRecognitionTask?
     private var startedListening = false
-    private var currentLocale: Locale = Locale(identifier: "en_US") // Default to English
+    private var currentLocale: Locale = Locale(identifier: "en_US")
 
-    // Stored as Any? because SpeechAnalyzer/AnalyzerInput are iOS 26+ only.
-    // Stored properties cannot be @available-gated, so we erase the type.
+    // Stored as Any? because SpeechAnalyzer/AnalyzerInput are iOS 26 SDK types.
+    // Stored properties cannot use @available, so we erase the type here.
     private var bufferAnalyzer: Any?
     private var bufferStreamContinuation: Any?
     private var bufferAnalysisTask: Task<Void, Never>?
@@ -22,37 +28,32 @@ public class ExpoSpeechTranscriberModule: Module {
 
         Events("onTranscriptionProgress", "onTranscriptionError")
 
-        // expose realtime recording/transcription
         AsyncFunction("recordRealTimeAndTranscribe") { () async -> Void in
             await self.recordRealTimeAndTranscribe()
         }
 
-        // Method 2: Transcribe from URL using SFSpeechRecognizer (iOS 13+)
+        // Transcribe from URL using SFSpeechRecognizer (iOS 13+)
         AsyncFunction("transcribeAudioWithSFRecognizer") { (audioFilePath: String) async throws -> String in
-            let url: URL
-            if audioFilePath.hasPrefix("file://") {
-                url = URL(string: audioFilePath)!
-            } else {
-                url = URL(fileURLWithPath: audioFilePath)
-            }
+            let url: URL = audioFilePath.hasPrefix("file://")
+                ? URL(string: audioFilePath)!
+                : URL(fileURLWithPath: audioFilePath)
             return await self.transcribeAudio(url: url)
         }
 
-        // Method 3: Transcribe from URL using SpeechAnalyzer (iOS 26+)
+        // Transcribe from URL using SpeechAnalyzer (iOS 26+ / Swift 6.2+ only)
         AsyncFunction("transcribeAudioWithAnalyzer") { (audioFilePath: String) async throws -> String in
-            #if SPEECH_ANALYZER_AVAILABLE
+            #if swift(>=6.2)
             if #available(iOS 26.0, *) {
-                let url: URL
-                if audioFilePath.hasPrefix("file://") {
-                    url = URL(string: audioFilePath)!
-                } else {
-                    url = URL(fileURLWithPath: audioFilePath)
-                }
+                let url: URL = audioFilePath.hasPrefix("file://")
+                    ? URL(string: audioFilePath)!
+                    : URL(fileURLWithPath: audioFilePath)
                 return try await self.transcribeAudioWithAnalyzer(url: url)
             }
             #endif
-            throw NSError(domain: "ExpoSpeechTranscriber", code: 501,
-                          userInfo: [NSLocalizedDescriptionKey: "SpeechAnalyzer requires iOS 26.0 or later"])
+            throw NSError(
+                domain: "ExpoSpeechTranscriber", code: 501,
+                userInfo: [NSLocalizedDescriptionKey: "SpeechAnalyzer requires iOS 26.0 or later"]
+            )
         }
 
         AsyncFunction("requestPermissions") { () async -> String in
@@ -64,7 +65,7 @@ public class ExpoSpeechTranscriberModule: Module {
         }
 
         Function("stopListening") { () -> Void in
-            return self.stopListening()
+            self.stopListening()
         }
 
         Function("isRecording") { () -> Bool in
@@ -72,10 +73,8 @@ public class ExpoSpeechTranscriberModule: Module {
         }
 
         Function("isAnalyzerAvailable") { () -> Bool in
-            #if SPEECH_ANALYZER_AVAILABLE
-            if #available(iOS 26.0, *) {
-                return true
-            }
+            #if swift(>=6.2)
+            if #available(iOS 26.0, *) { return true }
             #endif
             return false
         }
@@ -89,10 +88,9 @@ public class ExpoSpeechTranscriberModule: Module {
         }
 
         Function("stopBufferTranscription") { () -> Void in
-            return self.stopBufferTranscription()
+            self.stopBufferTranscription()
         }
 
-        // Language configuration APIs
         AsyncFunction("setLanguage") { (localeCode: String) async -> Void in
             await self.setLanguage(localeCode: localeCode)
         }
@@ -110,30 +108,24 @@ public class ExpoSpeechTranscriberModule: Module {
         }
     }
 
-    // MARK: - Buffer Transcription (Base64 entry point)
+    // MARK: - Base64 Buffer Entry Point
 
-    private func realtimeBufferTranscribeBase64(base64: String, sampleRate: Double) async -> Void {
+    private func realtimeBufferTranscribeBase64(base64: String, sampleRate: Double) async {
         guard let data = Data(base64Encoded: base64) else {
-            self.sendEvent("onTranscriptionError", ["message": "Invalid Base64 string"])
+            sendEvent("onTranscriptionError", ["message": "Invalid Base64 string"])
             return
         }
-
         let int16Count = data.count / 2
         var int16Buffer = [Int16](repeating: 0, count: int16Count)
         _ = int16Buffer.withUnsafeMutableBytes { data.copyBytes(to: $0) }
-
-        var floatBuffer = [Float32](repeating: 0.0, count: int16Count)
-        for i in 0..<int16Count {
-            floatBuffer[i] = Float(int16Buffer[i]) / 32768.0
-        }
-
+        let floatBuffer = int16Buffer.map { Float32($0) / 32768.0 }
         await realtimeBufferTranscribe(buffer: floatBuffer, sampleRate: sampleRate)
     }
 
-    // MARK: - Buffer Transcription (dispatch to iOS 26 or legacy)
+    // MARK: - Buffer Dispatch
 
-    private func realtimeBufferTranscribe(buffer: [Float32], sampleRate: Double) async -> Void {
-        #if SPEECH_ANALYZER_AVAILABLE
+    private func realtimeBufferTranscribe(buffer: [Float32], sampleRate: Double) async {
+        #if swift(>=6.2)
         if #available(iOS 26.0, *) {
             await realtimeBufferTranscribeWithAnalyzer(buffer: buffer, sampleRate: sampleRate)
             return
@@ -144,13 +136,12 @@ public class ExpoSpeechTranscriberModule: Module {
 
     // MARK: - iOS 26+ Buffer Transcription (SpeechAnalyzer)
 
-    #if SPEECH_ANALYZER_AVAILABLE
+    #if swift(>=6.2)
     @available(iOS 26.0, *)
     private func realtimeBufferTranscribeWithAnalyzer(buffer: [Float32], sampleRate: Double) async {
-        // Initialize analyzer and stream if not already set up
         if bufferAnalyzer == nil {
             guard await isLocaleSupported(locale: currentLocale) else {
-                self.sendEvent("onTranscriptionError", ["message": "Language '\(currentLocale.identifier)' is not supported for SpeechAnalyzer"])
+                sendEvent("onTranscriptionError", ["message": "Language '\(currentLocale.identifier)' is not supported for SpeechAnalyzer"])
                 return
             }
 
@@ -164,12 +155,12 @@ public class ExpoSpeechTranscriberModule: Module {
             do {
                 try await ensureModel(transcriber: transcriber, locale: currentLocale)
             } catch {
-                self.sendEvent("onTranscriptionError", ["message": "Failed to ensure model: \(error.localizedDescription)"])
+                sendEvent("onTranscriptionError", ["message": "Failed to ensure model: \(error.localizedDescription)"])
                 return
             }
 
             let analyzer = SpeechAnalyzer(modules: [transcriber])
-            self.bufferAnalyzer = analyzer
+            bufferAnalyzer = analyzer
 
             let stream = AsyncStream<AnalyzerInput> { continuation in
                 self.bufferStreamContinuation = continuation
@@ -185,27 +176,24 @@ public class ExpoSpeechTranscriberModule: Module {
 
             Task {
                 for try await result in transcriber.results {
-                    let recognizedText = String(result.text.characters)
-                    self.sendEvent(
-                        "onTranscriptionProgress",
-                        ["text": recognizedText, "isFinal": result.isFinal]
-                    )
+                    self.sendEvent("onTranscriptionProgress", [
+                        "text": String(result.text.characters),
+                        "isFinal": result.isFinal
+                    ])
                 }
             }
         }
 
-        // Convert Float32 buffer to AVAudioPCMBuffer
         let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
         guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(buffer.count)) else {
-            self.sendEvent("onTranscriptionError", ["message": "Unable to create PCM buffer"])
+            sendEvent("onTranscriptionError", ["message": "Unable to create PCM buffer"])
             return
         }
-
         pcmBuffer.frameLength = AVAudioFrameCount(buffer.count)
         if let channelData = pcmBuffer.floatChannelData {
-            buffer.withUnsafeBufferPointer { bufferPointer in
-                guard let sourceAddress = bufferPointer.baseAddress else { return }
-                memcpy(channelData[0], sourceAddress, buffer.count * MemoryLayout<Float>.size)
+            buffer.withUnsafeBufferPointer { ptr in
+                guard let src = ptr.baseAddress else { return }
+                memcpy(channelData[0], src, buffer.count * MemoryLayout<Float>.size)
             }
         }
 
@@ -213,67 +201,59 @@ public class ExpoSpeechTranscriberModule: Module {
             continuation.yield(AnalyzerInput(buffer: pcmBuffer))
         }
     }
-    #endif // SPEECH_ANALYZER_AVAILABLE
+    #endif // swift(>=6.2)
 
     // MARK: - Legacy Buffer Transcription (SFSpeechRecognizer, iOS 13+)
 
-    private func realtimeBufferTranscribeLegacy(buffer: [Float32], sampleRate: Double) async -> Void {
+    private func realtimeBufferTranscribeLegacy(buffer: [Float32], sampleRate: Double) async {
         if bufferRecognitionRequest == nil {
-            let speechRecognizer = SFSpeechRecognizer(locale: currentLocale)
-            guard let recognizer = speechRecognizer else {
-                self.sendEvent("onTranscriptionError", ["message": "Speech recognizer not available for locale: \(currentLocale.identifier)"])
+            guard let recognizer = SFSpeechRecognizer(locale: currentLocale) else {
+                sendEvent("onTranscriptionError", ["message": "Speech recognizer not available for locale: \(currentLocale.identifier)"])
                 return
             }
             bufferRecognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-
-            guard let recognitionRequest = bufferRecognitionRequest else {
-                self.sendEvent("onTranscriptionError", ["message": "Unable to create recognition request"])
+            guard let request = bufferRecognitionRequest else {
+                sendEvent("onTranscriptionError", ["message": "Unable to create recognition request"])
                 return
             }
-            recognitionRequest.shouldReportPartialResults = true
-
-            bufferRecognitionTask = recognizer.recognitionTask(with: recognitionRequest) { result, error in
+            request.shouldReportPartialResults = true
+            bufferRecognitionTask = recognizer.recognitionTask(with: request) { result, error in
                 if let error = error {
                     self.sendEvent("onTranscriptionError", ["message": error.localizedDescription])
                     return
                 }
                 guard let result = result else { return }
-                let recognizedText = result.bestTranscription.formattedString
-                self.sendEvent(
-                    "onTranscriptionProgress",
-                    ["text": recognizedText, "isFinal": result.isFinal]
-                )
+                self.sendEvent("onTranscriptionProgress", [
+                    "text": result.bestTranscription.formattedString,
+                    "isFinal": result.isFinal
+                ])
             }
         }
 
-        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: AVAudioChannelCount(1))!
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
         guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(buffer.count)) else {
-            self.sendEvent("onTranscriptionError", ["message": "Unable to create PCM buffer"])
+            sendEvent("onTranscriptionError", ["message": "Unable to create PCM buffer"])
             return
         }
-
         pcmBuffer.frameLength = AVAudioFrameCount(buffer.count)
         if let channelData = pcmBuffer.floatChannelData {
-            buffer.withUnsafeBufferPointer { bufferPointer in
-                guard let sourceAddress = bufferPointer.baseAddress else { return }
-                memcpy(channelData[0], sourceAddress, buffer.count * MemoryLayout<Float>.size)
+            buffer.withUnsafeBufferPointer { ptr in
+                guard let src = ptr.baseAddress else { return }
+                memcpy(channelData[0], src, buffer.count * MemoryLayout<Float>.size)
             }
         }
-
         bufferRecognitionRequest?.append(pcmBuffer)
     }
 
     // MARK: - Stop Buffer Transcription
 
     private func stopBufferTranscription() {
-        // Legacy cleanup
         bufferRecognitionRequest?.endAudio()
         bufferRecognitionRequest = nil
         bufferRecognitionTask?.cancel()
         bufferRecognitionTask = nil
 
-        // SpeechAnalyzer cleanup (iOS 26+ only, compiled conditionally)
-        #if SPEECH_ANALYZER_AVAILABLE
+        #if swift(>=6.2)
         if #available(iOS 26.0, *) {
             if let continuation = bufferStreamContinuation as? AsyncStream<AnalyzerInput>.Continuation {
                 continuation.finish()
@@ -286,10 +266,10 @@ public class ExpoSpeechTranscriberModule: Module {
         #endif
     }
 
-    // MARK: - Realtime Recording (dispatch to iOS 26 or legacy)
+    // MARK: - Realtime Recording Dispatch
 
-    private func recordRealTimeAndTranscribe() async -> Void {
-        #if SPEECH_ANALYZER_AVAILABLE
+    private func recordRealTimeAndTranscribe() async {
+        #if swift(>=6.2)
         if #available(iOS 26.0, *) {
             await recordRealTimeAndTranscribeWithAnalyzer()
             return
@@ -300,11 +280,11 @@ public class ExpoSpeechTranscriberModule: Module {
 
     // MARK: - iOS 26+ Realtime Recording (SpeechAnalyzer)
 
-    #if SPEECH_ANALYZER_AVAILABLE
+    #if swift(>=6.2)
     @available(iOS 26.0, *)
     private func recordRealTimeAndTranscribeWithAnalyzer() async {
         guard await isLocaleSupported(locale: currentLocale) else {
-            self.sendEvent("onTranscriptionError", ["message": "Language '\(currentLocale.identifier)' is not supported for SpeechAnalyzer"])
+            sendEvent("onTranscriptionError", ["message": "Language '\(currentLocale.identifier)' is not supported for SpeechAnalyzer"])
             return
         }
 
@@ -318,7 +298,7 @@ public class ExpoSpeechTranscriberModule: Module {
         do {
             try await ensureModel(transcriber: transcriber, locale: currentLocale)
         } catch {
-            self.sendEvent("onTranscriptionError", ["message": "Failed to download/ensure model: \(error.localizedDescription)"])
+            sendEvent("onTranscriptionError", ["message": "Failed to download/ensure model: \(error.localizedDescription)"])
             return
         }
 
@@ -338,7 +318,7 @@ public class ExpoSpeechTranscriberModule: Module {
             try audioEngine.start()
             startedListening = true
         } catch {
-            self.sendEvent("onTranscriptionError", ["message": "Audio Engine failed to start: \(error.localizedDescription)"])
+            sendEvent("onTranscriptionError", ["message": "Audio Engine failed to start: \(error.localizedDescription)"])
             return
         }
 
@@ -353,36 +333,34 @@ public class ExpoSpeechTranscriberModule: Module {
 
         Task {
             for try await result in transcriber.results {
-                let recognizedText = String(result.text.characters)
-                self.sendEvent(
-                    "onTranscriptionProgress",
-                    ["text": recognizedText, "isFinal": result.isFinal]
-                )
+                self.sendEvent("onTranscriptionProgress", [
+                    "text": String(result.text.characters),
+                    "isFinal": result.isFinal
+                ])
             }
         }
     }
-    #endif // SPEECH_ANALYZER_AVAILABLE
+    #endif // swift(>=6.2)
 
     // MARK: - Legacy Realtime Recording (SFSpeechRecognizer, iOS 13+)
 
-    private func recordRealTimeAndTranscribeLegacy() async -> Void {
-        let speechRecognizer = SFSpeechRecognizer(locale: currentLocale)
-        guard let recognizer = speechRecognizer else {
-            self.sendEvent("onTranscriptionError", ["message": "Speech recognizer not available for locale: \(currentLocale.identifier)"])
+    private func recordRealTimeAndTranscribeLegacy() async {
+        guard let recognizer = SFSpeechRecognizer(locale: currentLocale) else {
+            sendEvent("onTranscriptionError", ["message": "Speech recognizer not available for locale: \(currentLocale.identifier)"])
             return
         }
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        guard let recognitionRequest = recognitionRequest else {
-            self.sendEvent("onTranscriptionError", ["message": "Unable to create recognition request"])
+        guard let request = recognitionRequest else {
+            sendEvent("onTranscriptionError", ["message": "Unable to create recognition request"])
             return
         }
-        recognitionRequest.shouldReportPartialResults = true
+        request.shouldReportPartialResults = true
 
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-            recognitionRequest.append(buffer)
+            request.append(buffer)
         }
 
         audioEngine.prepare()
@@ -390,25 +368,22 @@ public class ExpoSpeechTranscriberModule: Module {
             try audioEngine.start()
             startedListening = true
         } catch {
-            self.sendEvent("onTranscriptionError", ["message": error.localizedDescription])
+            sendEvent("onTranscriptionError", ["message": error.localizedDescription])
             return
         }
 
-        recognitionTask = recognizer.recognitionTask(with: recognitionRequest) { result, error in
+        recognitionTask = recognizer.recognitionTask(with: request) { result, error in
             if let error = error {
                 self.stopListening()
                 self.sendEvent("onTranscriptionError", ["message": error.localizedDescription])
                 return
             }
             guard let result = result else { return }
-            let recognizedText = result.bestTranscription.formattedString
-            self.sendEvent(
-                "onTranscriptionProgress",
-                ["text": recognizedText, "isFinal": result.isFinal]
-            )
-            if result.isFinal {
-                self.stopListening()
-            }
+            self.sendEvent("onTranscriptionProgress", [
+                "text": result.bestTranscription.formattedString,
+                "isFinal": result.isFinal
+            ])
+            if result.isFinal { self.stopListening() }
         }
     }
 
@@ -432,7 +407,6 @@ public class ExpoSpeechTranscriberModule: Module {
         guard FileManager.default.fileExists(atPath: url.path) else {
             return "Error: Audio file not found at \(url.path)"
         }
-
         return await withCheckedContinuation { continuation in
             guard let recognizer = SFSpeechRecognizer(locale: currentLocale) else {
                 continuation.resume(returning: "Error: Speech recognizer not available for locale: \(currentLocale.identifier)")
@@ -442,7 +416,6 @@ public class ExpoSpeechTranscriberModule: Module {
                 continuation.resume(returning: "Error: Speech recognizer not available at this time")
                 return
             }
-
             let request = SFSpeechURLRecognitionRequest(url: url)
             request.shouldReportPartialResults = false
             recognizer.recognitionTask(with: request) { result, error in
@@ -462,16 +435,15 @@ public class ExpoSpeechTranscriberModule: Module {
         }
     }
 
-    // MARK: - URL Transcription (SpeechAnalyzer, iOS 26+)
+    // MARK: - URL Transcription (SpeechAnalyzer, iOS 26+ / Swift 6.2+)
 
-    #if SPEECH_ANALYZER_AVAILABLE
+    #if swift(>=6.2)
     @available(iOS 26.0, *)
     private func transcribeAudioWithAnalyzer(url: URL) async throws -> String {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw NSError(domain: "ExpoSpeechTranscriber", code: 404,
                           userInfo: [NSLocalizedDescriptionKey: "Audio file not found at \(url.path)"])
         }
-
         guard await isLocaleSupported(locale: currentLocale) else {
             throw NSError(domain: "ExpoSpeechTranscriber", code: 400,
                           userInfo: [NSLocalizedDescriptionKey: "Locale \(currentLocale.identifier) not supported"])
@@ -483,7 +455,6 @@ public class ExpoSpeechTranscriberModule: Module {
             reportingOptions: [.volatileResults],
             attributeOptions: [.audioTimeRange]
         )
-
         try await ensureModel(transcriber: transcriber, locale: currentLocale)
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
@@ -496,16 +467,13 @@ public class ExpoSpeechTranscriberModule: Module {
         }
 
         var finalText = ""
-        for try await recResponse in transcriber.results {
-            if recResponse.isFinal {
-                finalText += String(recResponse.text.characters)
-            }
+        for try await response in transcriber.results where response.isFinal {
+            finalText += String(response.text.characters)
         }
-
         return finalText.isEmpty ? "No speech detected" : finalText
     }
 
-    // MARK: - SpeechAnalyzer Helpers (iOS 26+)
+    // MARK: - SpeechAnalyzer Helpers (iOS 26+ / Swift 6.2+)
 
     @available(iOS 26.0, *)
     private func isLocaleSupported(locale: Locale) async -> Bool {
@@ -526,9 +494,7 @@ public class ExpoSpeechTranscriberModule: Module {
             throw NSError(domain: "ExpoSpeechTranscriber", code: 400,
                           userInfo: [NSLocalizedDescriptionKey: "Locale not supported"])
         }
-        if await isLocaleInstalled(locale: locale) {
-            return
-        }
+        guard !(await isLocaleInstalled(locale: locale)) else { return }
         try await downloadModelIfNeeded(for: transcriber)
     }
 
@@ -538,22 +504,20 @@ public class ExpoSpeechTranscriberModule: Module {
             try await downloader.downloadAndInstall()
         }
     }
-    #endif // SPEECH_ANALYZER_AVAILABLE
+    #endif // swift(>=6.2)
 
     // MARK: - Permissions
 
     private func requestTranscribePermissions() async -> String {
         return await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { authStatus in
-                let result: String
-                switch authStatus {
-                case .authorized:    result = "authorized"
-                case .denied:        result = "denied"
-                case .restricted:    result = "restricted"
-                case .notDetermined: result = "notDetermined"
-                @unknown default:    result = "unknown"
+            SFSpeechRecognizer.requestAuthorization { status in
+                switch status {
+                case .authorized:    continuation.resume(returning: "authorized")
+                case .denied:        continuation.resume(returning: "denied")
+                case .restricted:    continuation.resume(returning: "restricted")
+                case .notDetermined: continuation.resume(returning: "notDetermined")
+                @unknown default:    continuation.resume(returning: "unknown")
                 }
-                continuation.resume(returning: result)
             }
         }
     }
@@ -568,12 +532,12 @@ public class ExpoSpeechTranscriberModule: Module {
 
     // MARK: - Language Management
 
-    private func setLanguage(localeCode: String) async -> Void {
+    private func setLanguage(localeCode: String) async {
         let locale = Locale(identifier: localeCode)
         if SFSpeechRecognizer(locale: locale) != nil {
             currentLocale = locale
         } else {
-            self.sendEvent("onTranscriptionError", ["message": "Language '\(localeCode)' is not available on this device"])
+            sendEvent("onTranscriptionError", ["message": "Language '\(localeCode)' is not available on this device"])
         }
     }
 
